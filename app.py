@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 from langchain_ollama import ChatOllama
+from langchain_community.document_loaders import PyPDFLoader
 
 llm = ChatOllama(model="llama3.2:1b")
 
@@ -9,6 +10,19 @@ if not os.path.exists("data"):
     os.makedirs("data")
 
 DATA_FILE = "data/user_profiles.json"
+CHAT_FILE = "data/chat_history.json"
+
+
+def load_chat():
+    if os.path.exists(CHAT_FILE):
+        with open(CHAT_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+
+def save_chat(messages):
+    with open(CHAT_FILE, "w") as f:
+        json.dump(messages, f)
 
 
 def save_user(data):
@@ -23,7 +37,39 @@ def load_user():
     return None
 
 
+def get_company_onboarding_document():
+    document_text = ""
+    docs_folder = "docs"
+
+    if os.path.exists(docs_folder):
+        for filename in os.listdir(docs_folder):
+            if filename.endswith(".pdf"):
+                loader = PyPDFLoader(os.path.join(docs_folder, filename))
+                pages = loader.load()
+                for page in pages:
+                    document_text += page.page_content
+    return document_text
+
+
+company_onboarding_document = get_company_onboarding_document()
+
+
 user = load_user()
+
+with st.sidebar:
+    st.title("User Profile")
+    st.image("https://ui-avatars.com/api/?name=" + user["name"])
+    st.write(f"Name: {user['name']}")
+    st.write(f"Department: {user['department']}")
+    st.write(f"Role: {user['role']}")
+
+    st.divider()
+
+    if st.button("Clear Chat History"):
+        st.session_state.messages = []
+        save_chat([])
+        st.rerun()
+
 
 if not user:
     st.header("Welcome! Let's create your profile.")
@@ -44,10 +90,11 @@ else:
     st.write(f"I am your {user['department']} onboarding assistant.")
 
     if "messages" not in st.session_state:
-        st.session_state.messages = []
+        st.session_state.messages = load_chat()
 
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
+        avatar = "👤" if message["role"] == "user" else "🤖"
+        with st.chat_message(message["role"], avatar=avatar):
             st.markdown(message["content"])
 
     if prompt := st.chat_input("Ask me about your onboarding..."):
@@ -57,11 +104,13 @@ else:
 
         with st.chat_message("assistant"):
             contextual_prompt = f"""
-            You are a helpful onboarding assistant.
-            The user's name is {user['name']}.
-            Their department is {user['department']}.
-            Their role is {user['role']}.
-            Answer the following question: {prompt}
+            You are teh {user['department']} onboarding assistant.
+            User: {user['name']} ({user['role']} in {user['department']})
+
+            Company Onboarding Document:
+            {company_onboarding_document}
+
+            QUESTION: {prompt}
             """
 
         response = llm.invoke(contextual_prompt)
@@ -70,6 +119,7 @@ else:
         st.session_state.messages.append(
             {"role": "assistant", "content": response.content}
         )
+        save_chat(st.session_state.messages)
 
     if st.button("Reset Profile (Start Over)"):
         os.remove(DATA_FILE)
