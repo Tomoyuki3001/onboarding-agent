@@ -38,7 +38,7 @@ def load_user():
 
 
 def get_company_onboarding_document():
-    document_text = ""
+    document_chunks = []
     docs_folder = "docs"
 
     if os.path.exists(docs_folder):
@@ -47,12 +47,22 @@ def get_company_onboarding_document():
                 loader = PyPDFLoader(os.path.join(docs_folder, filename))
                 pages = loader.load()
                 for page in pages:
-                    document_text += page.page_content
-    return document_text
+                    document_chunks.append(
+                        f"--- SOURCE: {filename} ---\n{page.page_content}\n\n"
+                    )
+    if not document_chunks:
+        st.error(
+            "No company onboarding document found. Please upload a PDF file to the 'docs' folder."
+        )
+    else:
+        st.sidebar.markdown(
+            f"### Company Onboarding Document ({len(document_chunks)} characters)"
+        )
+
+    return "\n".join(document_chunks)
 
 
 company_onboarding_document = get_company_onboarding_document()
-
 
 user = load_user()
 
@@ -103,9 +113,17 @@ else:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
+            response_placeholder = st.empty()
+            full_response = ""
+
             contextual_prompt = f"""
-            You are teh {user['department']} onboarding assistant.
+            You are the {user['department']} onboarding assistant.
             User: {user['name']} ({user['role']} in {user['department']})
+
+            INSTRUCTIONS:
+            1. Use the company onboarding document to answer the question.
+            2. If you can find the answer in the document, you need to add the source file name to the end of your answer using the format "[SOURCE: <file name>]".
+            3. If you cannot find the answer, you need to say "I cannot find the answer in the company onboarding document", and suggest the user to ask the question to the HR manager.
 
             Company Onboarding Document:
             {company_onboarding_document}
@@ -113,13 +131,16 @@ else:
             QUESTION: {prompt}
             """
 
-        response = llm.invoke(contextual_prompt)
+            for chunk in llm.stream(contextual_prompt):
+                full_response += chunk.content
+                response_placeholder.markdown(full_response + "▌")
 
-        st.markdown(response.content)
-        st.session_state.messages.append(
-            {"role": "assistant", "content": response.content}
-        )
-        save_chat(st.session_state.messages)
+            response_placeholder.markdown(full_response)
+
+            st.session_state.messages.append(
+                {"role": "assistant", "content": full_response}
+            )
+            save_chat(st.session_state.messages)
 
     if st.button("Reset Profile (Start Over)"):
         os.remove(DATA_FILE)
