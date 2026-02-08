@@ -3,6 +3,9 @@ import json
 import os
 from langchain_ollama import ChatOllama
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 llm = ChatOllama(model="llama3.2:1b")
 
@@ -35,6 +38,36 @@ def load_user():
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     return None
+
+
+def get_vector_store():
+    docs_folder = "docs"
+    all_chunks = []
+
+    if os.path.exists(docs_folder):
+        for filename in os.listdir(docs_folder):
+            loader = PyPDFLoader(os.path.join(docs_folder, filename))
+            pages = loader.load()
+
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000, chunk_overlap=100
+            )
+
+            chunks = text_splitter.split_documents(pages)
+            all_chunks.extend(chunks)
+
+    if not all_chunks:
+        return None
+
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+    vector_store = Chroma.from_documents(
+        documents=all_chunks, embedding=embeddings, persist_directory="./chroma_db"
+    )
+    return vector_store
+
+
+vector_db = get_vector_store()
 
 
 def get_company_onboarding_document():
@@ -112,35 +145,32 @@ else:
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        relevant_docs = vector_db.similarity_search(prompt, k=3)
+        context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
+
+        contextual_prompt = f"""
+            You are the {user['department']} onboarding assistant.
+            User: {user['name']} ({user['role']} in {user['department']})
+
+            Use the following context to answer the user.
+            Context: {context_text}
+            Question: {prompt}
+            """
+
         with st.chat_message("assistant"):
             response_placeholder = st.empty()
             full_response = ""
 
-            contextual_prompt = f"""
-            You are the {user['department']} onboarding assistant.
-            User: {user['name']} ({user['role']} in {user['department']})
+        for chunk in llm.stream(contextual_prompt):
+            full_response += chunk.content
+            response_placeholder.markdown(full_response + "▌")
 
-            INSTRUCTIONS:
-            1. Use the company onboarding document to answer the question.
-            2. If you can find the answer in the document, you need to add the source file name to the end of your answer using the format "[SOURCE: <file name>]".
-            3. If you cannot find the answer, you need to say "I cannot find the answer in the company onboarding document", and suggest the user to ask the question to the HR manager.
+        response_placeholder.markdown(full_response)
 
-            Company Onboarding Document:
-            {company_onboarding_document}
-
-            QUESTION: {prompt}
-            """
-
-            for chunk in llm.stream(contextual_prompt):
-                full_response += chunk.content
-                response_placeholder.markdown(full_response + "▌")
-
-            response_placeholder.markdown(full_response)
-
-            st.session_state.messages.append(
-                {"role": "assistant", "content": full_response}
-            )
-            save_chat(st.session_state.messages)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": full_response}
+        )
+        save_chat(st.session_state.messages)
 
     if st.button("Reset Profile (Start Over)"):
         os.remove(DATA_FILE)
